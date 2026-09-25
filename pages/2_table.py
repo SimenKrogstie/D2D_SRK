@@ -1,5 +1,5 @@
-# Page 2: shows the imported data as a table, one row per column, with a
-# sparkline of each column's first month of values.
+"""Data table page."""
+
 import pandas as pd
 import streamlit as st
 
@@ -10,12 +10,11 @@ st.caption("One row per data column; sparkline shows the first month of values."
 
 df = load_reservoir_data()
 
-# Slice out just the first calendar month, used for the sparkline previews below.
+# Slice out just the first calendar month, used for the data series preview
 first_month_cutoff = df[DATE_COL].min() + pd.DateOffset(months=1)
 first_month_df = df[df[DATE_COL] < first_month_cutoff]
 
-# One row per data column (a transpose of the usual orientation), so
-# LineChartColumn can draw a sparkline of each column's first-month values.
+# One row per data column
 display_df = pd.DataFrame(
     {
         "column": VALUE_COLS,
@@ -23,8 +22,7 @@ display_df = pd.DataFrame(
     }
 )
 
-# Render the table itself, using LineChartColumn to turn each row's list
-# of values into a small sparkline chart.
+# Render the table, LineChartColumn draws a sparklin of each columns first month
 st.dataframe(
     display_df,
     column_config={
@@ -34,6 +32,6 @@ st.dataframe(
     width="stretch",
 )
 
-# Collapsed by default; lets the user peek at the underlying (untransposed) data.
+# Collapseble table of raw data
 with st.expander("Raw data preview"):
     st.dataframe(df.head(20), width="stretch")

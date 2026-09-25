@@ -1,6 +1,5 @@
-# Single shared place where the reservoir CSV is read and shaped for the app.
-# Every page imports load_reservoir_data() (plus the DATE_COL/VALUE_COLS
-# constants) from here instead of reading the CSV or hardcoding column names itself.
+"Preprocessing of the data"
+
 from pathlib import Path
 
 import pandas as pd
@@ -8,7 +7,6 @@ import streamlit as st
 
 DATA_PATH = Path(__file__).resolve().parent / "data" / "reservoirs.csv"
 
-# Maps the raw Norwegian CSV headers to English, understandable names.
 RENAME_MAP = {
     "dato_Id": "date",
     "omrType": "area_type",
@@ -23,7 +21,6 @@ RENAME_MAP = {
     "endring_fyllingsgrad": "change_in_fill_degree",
 }
 
-# Shared constants so pages never hardcode column names themselves.
 DATE_COL = "date"
 
 VALUE_COLS = [
@@ -35,18 +32,17 @@ VALUE_COLS = [
 ]
 
 
-# Cached so the CSV is only read/parsed once per session, not on every page render.
+# Caching data so its only read once per session
 @st.cache_data
 def load_reservoir_data() -> pd.DataFrame:
     # Read the raw CSV and translate its headers to the English names above.
     df = pd.read_csv(DATA_PATH, parse_dates=["dato_Id"])
     df = df.rename(columns=RENAME_MAP)
 
-    # National total only (area_type == "NO"); raw data has 5 price areas + 3
-    # watercourse areas interleaved per date, matching notebooks/assignment_1.ipynb.
+    # National total only
     df = df.loc[df["area_type"] == "NO", [DATE_COL] + VALUE_COLS]
 
-    # Put rows in chronological order once here, so pages never need to re-sort.
+    # Sorting rows in chronological order
     df = df.sort_values(DATE_COL).reset_index(drop=True)
 
     return df
