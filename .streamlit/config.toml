@@ -1,0 +1,8 @@
+[theme]
+base = "dark"
+
+[server] 
+runOnSave = true
+
+[runner]
+fastReruns = false
