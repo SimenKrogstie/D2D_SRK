@@ -5,8 +5,8 @@ import streamlit as st
 
 from data_loader import DATE_COL, VALUE_COLS, load_reservoir_data
 
-st.title("Data Table")
-st.caption("One row per data column; sparkline shows the first month of values.")
+st.title("📊 Data Table")
+st.caption("One row per data column. The sparkline shows the first month.")
 
 df = load_reservoir_data()
 
