@@ -1,4 +1,5 @@
-# Page 4: reserved for future work, no content required by the assignment yet.
+"""Contactinformation page."""
+
 import streamlit as st
 
 st.title("Contact me")

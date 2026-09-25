@@ -1,5 +1,5 @@
-# Page 1: the app's landing page (default view), with a welcome message and
-# a summary of what each other page contains.
+"""Home page of the app."""
+
 import streamlit as st
 
 st.title("Norwegian Hydropower Reservoir Data")
