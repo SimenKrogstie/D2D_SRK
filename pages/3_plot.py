@@ -6,7 +6,7 @@ import streamlit as st
 
 from data_loader import DATE_COL, VALUE_COLS, load_reservoir_data
 
-st.title("Reservoir Data Over Time")
+st.title("📈 Reservoir Data Over Time")
 
 df = load_reservoir_data()
 
