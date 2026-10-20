@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-st.title("📲 Contact me")
+st.title("Contact me")
 
 # Link to my personal website with contact information
 st.markdown(

@@ -86,7 +86,7 @@ class FlowsPage:
             )
 
     def render(self) -> None:
-        st.title("🔌 Cross-border Power Flows")
+        st.title("Cross-border Power Flows")
         if not self.data.connections():
             st.warning("No flow data found in MongoDB. Run notebooks/assignment_2.ipynb first.")
             return
