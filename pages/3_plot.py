@@ -1,63 +1,69 @@
-"""Page with interactive plot of imported data"""
+"""Interactive plot of the reservoir data, one line per area"""
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from data_loader import DATE_COL, VALUE_COLS, load_reservoir_data
+from modules.data_loader import ReservoirClient, ReservoirControls
+ 
 
-st.title("📈 Reservoir Data Over Time")
+class ReservoirPlotPage:
+    """Line plot controlled by the sidebar in app.py."""
 
-df = load_reservoir_data()
+    DATE_COL = ReservoirClient.DATE_COL
+    VALUE_COLS = ReservoirClient.VALUE_COLS
 
-# Derive the month of each data point
-df["_month"] = df[DATE_COL].dt.to_period("M").astype(str)
-months = sorted(df["_month"].unique())
+    def __init__(self):
+        self.controls = ReservoirControls()
+
+    @staticmethod
+    def normalize(series: pd.Series) -> pd.Series:
+        """Scale to 0-1. A constant series is set to 1 to avoid dividing by 0"""
+        value_range = series.max() - series.min()
+        if value_range == 0:
+            return pd.Series(1.0, index=series.index)
+        return (series - series.min()) / value_range
+
+    def one_column_all_areas(self, df: pd.DataFrame):
+        """One line per area for the chosen column"""
+        return px.line(
+            df,
+            x=self.DATE_COL,
+            y=self.controls.value_col,
+            color="area",
+            title=f"{self.controls.value_col} - {ReservoirClient.AREA_TYPES[self.controls.area_type]}",
+            labels={self.DATE_COL: "Date", "area": "Area"},
+        )
+
+    def all_columns_one_area(self, df: pd.DataFrame):
+        """All columns, normalized, for one area"""
+        area = st.selectbox("Area", options=sorted(df["area"].unique()))
+        plot_data = df.loc[df["area"] == area].copy()
+        plot_data[self.VALUE_COLS] = plot_data[self.VALUE_COLS].apply(self.normalize)
+        return px.line(
+            plot_data,
+            x=self.DATE_COL,
+            y=self.VALUE_COLS,
+            title=f"All columns for {area} (normalized)",
+            labels={self.DATE_COL: "Date", "value": "Normalized value (0-1)", "variable": "Column"},
+        )
+
+    def render(self) -> None:
+        st.title("Reservoir Data Over Time")
+
+        df = self.controls.selected_data()
+        if df.empty:
+            st.info("No data in the selected interval.")
+            return
+
+        # "All columns" plots oine area, otherwise one column for each area
+        if self.controls.value_col == ReservoirControls.ALL_COLUMNS:
+            fig = self.all_columns_one_area(df)
+        else:
+            fig = self.one_column_all_areas(df)
+
+        st.plotly_chart(fig, width="stretch")
 
 
-# Widget to select what column to plot, or all.
-col_choice = st.selectbox("Column to plot", options=["All columns"] + VALUE_COLS)
-
-# Widghet to select a subset of months to show
-start_month, end_month = st.select_slider(
-    "Month range",
-    options=months,
-    value=(months[0], months[0]),
-    key="month_range",
-)
-
-# Restrict the data to the selected month range before plotting.
-mask = (df["_month"] >= start_month) & (df["_month"] <= end_month)
-plot_df = df.loc[mask]
-
-# Which column(s) to actually draw as lines, based on the dropdown above.
-show_all_columns = col_choice == "All columns"
-y_cols = VALUE_COLS if show_all_columns else [col_choice]
-
-# Function forn ormaliizing data to between 0 and 1
-def normalize(series):
-    value_range = series.max() - series.min()
-    if value_range == 0:
-        return pd.Series(1.0, index=series.index)
-    return (series - series.min()) / value_range
-
-# Normalizing if all columns is to be shown to make them comparable on one axis
-# since they are on a very different scale
-if show_all_columns:
-    plot_data = plot_df.copy()
-    plot_data[y_cols] = plot_data[y_cols].apply(normalize)
-    value_label = "Normalized value (0-1)"
-else:
-    plot_data = plot_df
-    value_label = col_choice
-
-# Build and render the line chart
-fig = px.line(
-    plot_data,
-    x=DATE_COL,
-    y=y_cols,
-    title="Reservoir data over selected period",
-    labels={DATE_COL: "Date", "value": value_label, "variable": "Column"},
-)
-fig.update_layout(legend_title_text="Column")
-st.plotly_chart(fig, width="stretch")
+# Streamlit reruns this file on every interaction
+ReservoirPlotPage().render()
