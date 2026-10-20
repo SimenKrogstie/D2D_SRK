@@ -56,7 +56,7 @@ class ReservoirPlotPage:
             st.info("No data in the selected interval.")
             return
 
-        # "All columns" plots oine area, otherwise one column for each area
+        # "All columns" plots one area, otherwise one column for each area
         if self.controls.value_col == ReservoirControls.ALL_COLUMNS:
             fig = self.all_columns_one_area(df)
         else:
