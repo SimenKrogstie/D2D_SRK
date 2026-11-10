@@ -1,6 +1,7 @@
 """Cross-border power flows to and from Norway, read from MongoDB."""
 
 import calendar
+from typing import ClassVar
 
 import plotly.express as px
 import streamlit as st
@@ -11,8 +12,8 @@ from modules.data_flow import FlowData
 class FlowsPage:
     """Yearly pie chart on the left, hourly line plot for chosen months on the right."""
 
-    # Month numbers (stored in MongoDB) mapped to short names (shown on the pills)
-    MONTH_NAMES = {m: calendar.month_abbr[m] for m in range(1, 13)}
+    # Month numbers (stored in MongoDB) mapped to short names
+    MONTH_NAMES: ClassVar[dict[int, str]] = {m: calendar.month_abbr[m] for m in range(1, 13)}
 
     def __init__(self):
         self.data = FlowData() # Cached MongoDB queries
@@ -21,6 +22,8 @@ class FlowsPage:
         """Left column: connection and year selection, pie chart of the yearly totals per direction."""
         st.subheader("Yearly total per direction")
         connection = st.radio("Connection", options=self.data.connections(), horizontal=True)
+        if connection is None: 
+            st.stop()   # Never happens, render() checks for connections first
         years = self.data.years(connection)
         # Default the recent complete year
         year = st.selectbox("Year", options=years, index=max(len(years) - 2, 0))
@@ -42,7 +45,7 @@ class FlowsPage:
         months = st.pills(
             "Months",
             options=list(self.MONTH_NAMES),
-            format_func=self.MONTH_NAMES.get,
+            format_func=lambda m: self.MONTH_NAMES[m],
             selection_mode="multi",
             default=[1],
         )
