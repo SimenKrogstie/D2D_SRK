@@ -1,5 +1,7 @@
 """Download and preprocessing of reservoir data from the NVE Magasinstatistikk API."""
 
+from typing import ClassVar
+
 import pandas as pd
 import requests
 import streamlit as st
@@ -11,7 +13,7 @@ class ReservoirClient:
     API_BASE = "https://biapi.nve.no/magasinstatistikk/api/Magasinstatistikk"
 
     # Norwegian API columns to English
-    RENAME_MAP = {
+    RENAME_MAP: ClassVar[dict[str, str]] = {
         "dato_Id": "date",
         "omrType": "area_type",
         "omrnr": "area_number",
@@ -27,7 +29,8 @@ class ReservoirClient:
 
     DATE_COL = "date"
 
-    VALUE_COLS = [
+    # Numerical columns that can be plotted
+    VALUE_COLS: ClassVar[list[str]] = [
         "fill_degree",
         "capacity_twh",
         "filling_twh",
@@ -35,20 +38,21 @@ class ReservoirClient:
         "change_in_fill_degree",
     ]
 
-    AREA_TYPES = {
+    # API area codes with labels for the sidebar
+    AREA_TYPES: ClassVar[dict[str, str]] = {
         "EL": "Price areas (NO1-NO5)",
         "NO": "Norway (national total)",
         "VASS": "Watercourse areas",
     }
 
     def __init__(self, timeout: int = 60):
-        self.timeout = timeout
+        self.timeout = timeout  # Seconds before a request gives up
 
     def fetch_raw(self) -> pd.DataFrame:
         """All public reservoir data with the original column names (HentOffentligData)."""
         # One request returns every week for every area
         response = requests.get(f"{self.API_BASE}/HentOffentligData", timeout=self.timeout)
-        response.raise_for_status() # Fail on HTTP errors
+        response.raise_for_status()  # Fail on HTTP errors
         return pd.DataFrame(response.json())
 
     def fetch_all(self) -> pd.DataFrame:
@@ -57,6 +61,7 @@ class ReservoirClient:
 
     @classmethod
     def preprocess(cls, df: pd.DataFrame) -> pd.DataFrame:
+        """"Rename the columns, parse the dates and sort the rows."""
         df = df.rename(columns=cls.RENAME_MAP)
 
         # Date is the last day of the ISO week. next_publish_date uses
@@ -65,7 +70,7 @@ class ReservoirClient:
         df["next_publish_date"] = pd.to_datetime(df["next_publish_date"], errors="coerce")
         df.loc[df["next_publish_date"].dt.year < 1900, "next_publish_date"] = pd.NaT
 
-        # Sorting API rows in chronological order and then by area
+        # Chronological order, then by area
         return df.sort_values([cls.DATE_COL, "area_type", "area_number"]).reset_index(drop=True)
 
     def fetch_areas_raw(self):
@@ -120,9 +125,9 @@ class ReservoirData:
     # Each slider interval triggers a download, cached for an hour
     @st.cache_data(ttl="1h", show_spinner="Downloading the chosen interval from NVE...")
     def interval(_self, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-        """Download the data and keep only the rows between start and end (inclusive).
+        """Download the data and keep only the rows between start and end.
 
-        HentOffentligData has no date parameters, so the request returns the full 
+        `HentOffentligData` has no date parameters, so the request returns the full 
         series and the interval is cut out right after downloading.
         """
         df = _self.client.fetch_all()
@@ -144,6 +149,19 @@ class ReservoirData:
         """All months (YYYY-MM) covered by the API, used as slider options."""
         dates = self.all()[ReservoirClient.DATE_COL]
         return [str(p) for p in pd.period_range(dates.min(), dates.max(), freq="M")]
+
+    def area_numbers(self, area_type: str) -> list[int]:
+        """Area numbers with data for an area type."""
+        df = self.all()
+        return sorted(int(n) for n in df.loc[df["area_type"] == area_type, "area_number"].unique())
+
+    def area_series(self, area_type: str, area_number: int, column: str = "fill_degree") -> pd.Series:
+        """Full weekly history of one column for one area."""
+        df = self.all()
+        mask = (df["area_type"] == area_type) & (df["area_number"] == area_number)
+        series = df.loc[mask].set_index(ReservoirClient.DATE_COL)[column].sort_index()
+        series.name = column
+        return series
 
     def selection(self, area_type: str, month_range: tuple[str, str]) -> pd.DataFrame:
         """Download the chosen interval and keep the chosen area type, with area labels."""
@@ -170,9 +188,12 @@ class ReservoirControls:
     def __init__(self, data: ReservoirData | None = None):
         self.data = data or ReservoirData()
 
-    def render(self, allow_all_columns: bool = False) -> None:
-        """Draw the sidebar. allow_all_columns adds "All columns" to the column dropdown,
-        used on the plot page only since the table's sparkline shows one column."""
+    def render(self, allow_all_columns: bool = False, single_area: bool = False) -> None:
+        """Draw the sidebar.
+
+        allow_all_columns adds `All columns` to the column dropdown on the plot page,
+        since the table's sparkline shows one column. single_area shows an area 
+        dropdown instead of the slider and column dropdown."""
         with st.sidebar:
             st.header("Reservoir data")
 
@@ -182,6 +203,20 @@ class ReservoirControls:
                 format_func=lambda t: f"{t} - {ReservoirClient.AREA_TYPES[t]}",
                 key="area_type",
             )
+
+            if single_area:
+                # Reset the area if it doesn't exist for the new area type
+                area_type = self.area_type
+                numbers = self.data.area_numbers(area_type)
+                if st.session_state.get("area_number") not in numbers:
+                    st.session_state.pop("area_number", None)
+                st.selectbox(
+                    "Area",
+                    options=numbers,
+                    format_func=lambda n: self.data.area_label(area_type, n),
+                    key="area_number",
+                )
+                return
 
             # The slider decides which interval of data is downloaded and shown
             months = self.data.months()
@@ -217,6 +252,14 @@ class ReservoirControls:
     @property
     def value_col(self) -> str:
         return st.session_state["value_col"]
+
+    @property
+    def area_number(self) -> int:
+        return st.session_state["area_number"]
+
+    @property
+    def area_label(self) -> str:
+        return self.data.area_label(self.area_type, self.area_number)
 
     def selected_data(self) -> pd.DataFrame:
         """ The data matching the current sidebar choices"""
