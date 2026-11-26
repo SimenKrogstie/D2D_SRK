@@ -3,9 +3,11 @@
 import calendar
 from typing import ClassVar
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from modules import theme
 from modules.data_flow import FlowData
 
 
@@ -16,7 +18,7 @@ class FlowsPage:
     MONTH_NAMES: ClassVar[dict[int, str]] = {m: calendar.month_abbr[m] for m in range(1, 13)}
 
     def __init__(self):
-        self.data = FlowData() # Cached MongoDB queries
+        self.data: FlowData  # Cached MongoDB queries, connected in render()
 
     def render_pie(self) -> tuple[str, int]:
         """Left column: connection and year selection, pie chart of the yearly totals per direction."""
@@ -28,15 +30,32 @@ class FlowsPage:
         # Default the recent complete year
         year = st.selectbox("Year", options=years, index=max(len(years) - 2, 0))
 
-        year_df = self.data.flows(connection, year)
+        with theme.data_guard("the flows from MongoDB"):
+            year_df = self.data.flows(connection, year)
         # Sum hourly energy, shown in GWh
         totals = year_df.groupby("direction", as_index=False)["energy_mwh"].sum()
         totals["energy_gwh"] = totals["energy_mwh"] / 1000
 
         fig = px.pie(totals, names="direction", values="energy_gwh", title=f"{connection}, {year} (GWh)")
         fig.update_traces(textinfo="percent+value")
-        st.plotly_chart(fig, width="stretch")
+        theme.show(fig)
         return connection, year
+
+    @staticmethod
+    def break_gaps(df: pd.DataFrame) -> pd.DataFrame:
+        """An empty row after each gap of more than an hour, per direction.
+
+        Plotly draws a straight line across the months that aren't selected otherwise; a missing
+        value breaks the line instead.
+        """
+        frames = []
+        for direction, group in df.sort_values("time").groupby("direction", sort=False):
+            gap_starts = group["time"].diff() > pd.Timedelta(hours=1)
+            breaks = pd.DataFrame({"direction": direction,
+                                   "time": group.loc[gap_starts, "time"] - pd.Timedelta(minutes=30),
+                                   "flow_mw": float("nan")})
+            frames.append(pd.concat([group[["direction", "time", "flow_mw"]], breaks]).sort_values("time"))
+        return pd.concat(frames, ignore_index=True)
 
     def render_line(self, connection: str, year: int) -> None:
         """Right column: month pills, hourly line plot per direction."""
@@ -54,20 +73,22 @@ class FlowsPage:
             return
 
         # Sorted tuple, so the same selectriuon hits the same cache entry
-        month_df = self.data.flows(connection, year, tuple(sorted(months)))
+        with theme.data_guard("the flows from MongoDB"):
+            month_df = self.data.flows(connection, year, tuple(sorted(months)))
         if month_df.empty:
             st.info("No data for the selected months.")
             return
 
         fig = px.line(
-            month_df,
+            self.break_gaps(month_df),
             x="time",
             y="flow_mw",
             color="direction",
             title=f"{connection}, {year}",
             labels={"time": "Time (UTC)", "flow_mw": "Flow (MW)", "direction": "Direction"},
         )
-        st.plotly_chart(fig, width="stretch")
+        fig.update_layout(hovermode="x unified")
+        theme.show(fig)
 
     @staticmethod
     def render_source() -> None:
@@ -89,8 +110,13 @@ class FlowsPage:
             )
 
     def render(self) -> None:
-        st.title("Cross-border Power Flows")
-        if not self.data.connections():
+        theme.page_header("Cross-border Power Flows", "Power flows",
+                          "Physical power flows between Norway and its neighbours from ENTSO-E.")
+        # Missing secrets or an unreachable database give a warning instead of a traceback
+        with theme.data_guard("the flows from MongoDB"):
+            self.data = FlowData()
+            connections = self.data.connections()
+        if not connections:
             st.warning("No flow data found in MongoDB. Run notebooks/assignment_2.ipynb first.")
             return
 
