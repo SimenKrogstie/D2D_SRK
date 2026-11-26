@@ -1,7 +1,13 @@
 [theme]
+# Dark blue theme, same colours as modules/theme.py
 base = "dark"
+primaryColor = "#4FA3D9"
+backgroundColor = "#0F1720"
+secondaryBackgroundColor = "#1A2532"
+textColor = "#E6EDF3"
+font = "SF Pro Rounded, ui-rounded, sans-serif"
 
-[server] 
+[server]
 runOnSave = true
 
 [runner]
