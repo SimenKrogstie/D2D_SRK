@@ -3,6 +3,7 @@
 import pandas as pd
 import streamlit as st
 
+from modules import theme
 from modules.analysis import spectrogram, stl_decomposition
 from modules.data_loader import ReservoirControls
 
@@ -17,9 +18,13 @@ class ReservoirAnalysisPage:
         self.controls = ReservoirControls()
 
     def render(self) -> None:
-        st.title("Reservoir Analysis")
+        header = theme.page_header("Seasonal Analysis", "Reservoirs",
+                                   "The weekly filling degree of the chosen area split into trend, yearly cycle and "
+                                   "remainder (STL), and how its periodic patterns change over time (spectrogram).")
 
-        series = self.controls.data.area_series(self.controls.area_type, self.controls.area_number)
+        with theme.data_guard("the reservoir data from NVE"):
+            series = self.controls.data.area_series(self.controls.area_type, self.controls.area_number)
+        series = series.dropna()
         if series.empty:
             st.info("No filling degree data for this area.")
             return
@@ -31,8 +36,7 @@ class ReservoirAnalysisPage:
             "Years", options=years, value=(max(years[0], years[-1] - 9), years[-1])
         )
         series = series.loc[str(first):str(last)]
-        st.caption(f"Weekly filling degree for {self.controls.area_label}, {first}–{last} "
-                   f"({len(series)} weeks).")
+        header.caption(f"Weekly filling degree for {self.controls.area_label}, {first}–{last}.")
 
         stl_tab, spectrogram_tab = st.tabs(["STL decomposition", "Spectrogram"])
         with stl_tab:
@@ -53,8 +57,7 @@ class ReservoirAnalysisPage:
                                 help="Down-weights outliers when fitting the smoothers")
         # Invalid settings show a warning instead of crashing the page
         try:
-            st.plotly_chart(stl_decomposition(series, seasonal=seasonal, trend=trend, robust=robust),
-                            width="stretch")
+            theme.show(stl_decomposition(series, seasonal=seasonal, trend=trend, robust=robust))
         except ValueError as error:
             st.warning(str(error))
 
@@ -67,8 +70,7 @@ class ReservoirAnalysisPage:
         overlap = right.slider("Window overlap (weeks)", min_value=0, max_value=window - 1,
                                value=min(78, window - 1))
         try:
-            st.plotly_chart(spectrogram(series, window_weeks=window, overlap_weeks=overlap),
-                            width="stretch")
+            theme.show(spectrogram(series, window_weeks=window, overlap_weeks=overlap))
         except ValueError as error:
             st.warning(str(error))
 

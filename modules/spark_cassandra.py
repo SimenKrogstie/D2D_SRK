@@ -1,4 +1,4 @@
-"""Storing and extracting the cross-border flows in a local Cassandra database with Spark."""
+"""Storing and extracting the cross-border flows and exchange rates in a local Cassandra database with Spark."""
 
 import os
 import subprocess
@@ -6,10 +6,12 @@ import sys
 import time
 
 import pandas as pd
+# pyspark 3.5 imports distutils, which Python 3.12 removed; importing setuptools provides it
+import setuptools  # noqa: F401
 
 
 class SparkCassandra:
-    """Spark session connected to Cassandra, plus the schema for the flow table."""
+    """Spark session connected to Cassandra, plus the schemas for the flow and exchange rate tables."""
 
     CONNECTOR = "com.datastax.spark:spark-cassandra-connector_2.12:3.5.1"
     KEYSPACE = "ind320"
@@ -17,6 +19,10 @@ class SparkCassandra:
 
     # Columns extracted from Cassandra for the plots and MongoDB
     COLUMNS = ["connection", "direction", "from_zone", "to_zone", "year", "time", "flow_mw", "energy_mwh"]
+
+    # Norges Bank exchange rates, one row per currency and business day (part 4)
+    RATES_TABLE = "exchange_rates"
+    RATES_COLUMNS = ["currency", "year", "date", "rate"]
 
     def __init__(self, host: str = "localhost", port: int = 9042):
         self.host = host
@@ -43,11 +49,11 @@ class SparkCassandra:
         time.tzset()
 
     def create_schema(self) -> None:
-        """Create the keyspace and table.
+        """Create the keyspace and tables.
 
-        Key ((connection, year), direction, time): one partition per
-        connection and year, sorted by direction and time. Rewriting rows
-        overwrites instead of duplicating.
+        Flows: key ((connection, year), direction, time), one partition per connection and year,
+        sorted by direction and time. Rates: key ((currency, year), date), one partition per
+        currency and year. Rewriting rows overwrites instead of duplicating.
         """
         from cassandra.cluster import Cluster
 
@@ -72,6 +78,15 @@ class SparkCassandra:
                 PRIMARY KEY ((connection, year), direction, time)
             )
         """)
+        self.session.execute(f"""
+            CREATE TABLE IF NOT EXISTS {self.KEYSPACE}.{self.RATES_TABLE} (
+                currency text,
+                year int,
+                date timestamp,
+                rate double,
+                PRIMARY KEY ((currency, year), date)
+            )
+        """)
 
     def start_spark(self):
         """Start a Spark session with the Cassandra connector."""
@@ -92,19 +107,19 @@ class SparkCassandra:
         )
         return self.spark
 
-    def _reader(self):
+    def _reader(self, table: str | None = None):
         return self.spark.read.format("org.apache.spark.sql.cassandra").options(
-            table=self.TABLE, keyspace=self.KEYSPACE
+            table=table or self.TABLE, keyspace=self.KEYSPACE
         )
 
-    def write(self, df: pd.DataFrame) -> int:
-        """Convert a pandas DataFrame to Spark and append it to the Cassandra table."""
+    def write(self, df: pd.DataFrame, table: str | None = None) -> int:
+        """Convert a pandas DataFrame to Spark and append it to a Cassandra table (the flows by default)."""
         sdf = self.spark.createDataFrame(df)    # Types inferred from pandas
         # "append" writes each row by its primary key, so rows that already exist are
         # overwritten instead of duplicated
         (
             sdf.write.format("org.apache.spark.sql.cassandra")
-            .options(table=self.TABLE, keyspace=self.KEYSPACE)
+            .options(table=table or self.TABLE, keyspace=self.KEYSPACE)
             .mode("append")
             .save()
         )
@@ -115,6 +130,14 @@ class SparkCassandra:
         from pyspark.sql import functions as F
 
         return self._reader().load().select(*self.COLUMNS).withColumn("month", F.month("time"))
+
+    def write_rates(self, df: pd.DataFrame) -> int:
+        """Exchange rates in long format (CurrencyRepository.to_long) to the rates table."""
+        return self.write(df[self.RATES_COLUMNS], self.RATES_TABLE)
+
+    def read_rates(self):
+        """Spark DataFrame with the stored exchange rates."""
+        return self._reader(self.RATES_TABLE).load().select(*self.RATES_COLUMNS)
 
     def stop(self) -> None:
         if self.spark is not None:

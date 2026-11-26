@@ -26,6 +26,7 @@ env/
 *.shx
 *.csv
 
+
 # The NVE Atlas shapefiles are needed by the notebook and the app
 !data/Budområder/*
 !data/NVE_Region/*
