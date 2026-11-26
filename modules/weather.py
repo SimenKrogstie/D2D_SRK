@@ -1,5 +1,6 @@
 """Hourly ERA5 data from open-meteo. WeatherClient is used by the notebook, WeatherData by the app."""
 
+import time
 from pathlib import Path
 from typing import ClassVar
 
@@ -7,6 +8,7 @@ import openmeteo_requests
 import pandas as pd
 import requests_cache
 import streamlit as st
+from openmeteo_requests.Client import OpenMeteoRequestsError
 from retry_requests import retry
 
 from modules.regions import NVE_REGIONS_SHP, PRICE_AREAS_SHP, region_locations
@@ -18,10 +20,65 @@ CACHE_PATH = REPO_ROOT / ".cache" / "open_meteo"
 # Magasinstatistikk area type -> region name used in modules/regions.py
 AREA_TO_REGION = {"EL": "NO{}", "NO": "NO", "VASS": "VASS{}"}
 
+# Locations averaged per region for the weekly analyses (correlation, forecast). One point
+# of the 25 km ERA5 grid says little about a whole region, and the disk cache makes the
+# extra quota a one-off cost
+DEFAULT_LOCATIONS = 5
+
 
 def region_for_area(area_type: str, area_number: int) -> str:
     """E.g. ("EL", 3) -> "NO3", ("NO", 0) -> "NO", ("VASS", 2) -> "VASS2"."""
     return AREA_TO_REGION[area_type].format(area_number)
+
+
+# Label, unit and how hours are combined into days/weeks/months. Wind direction is left
+# out, since an average of angles is meaningless
+VARIABLE_INFO: dict[str, tuple[str, str, str]] = {
+    "temperature_2m": ("Temperature", "°C", "mean"),
+    "precipitation": ("Precipitation", "mm", "sum"),
+    "rain": ("Rain", "mm", "sum"),
+    "snowfall": ("Snowfall", "cm", "sum"),
+    "relative_humidity_2m": ("Relative humidity", "%", "mean"),
+    "wind_speed_10m": ("Wind speed", "m/s", "mean"),
+    "wind_gusts_10m": ("Wind gusts", "m/s", "mean"),
+    "et0_fao_evapotranspiration": ("Evapotranspiration (ET₀)", "mm", "sum"),
+}
+
+# Magasinstatistikk weeks and Norges Bank dates follow Norwegian time
+LOCAL_TZ = "Europe/Oslo"
+
+
+def variable_label(variable: str, with_unit: bool = True) -> str:
+    label, unit, _ = VARIABLE_INFO.get(variable, (variable, "", "mean"))
+    return f"{label} ({unit})" if with_unit and unit else label
+
+
+def aggregate(df: pd.DataFrame, freq: str) -> pd.DataFrame:
+    """Hourly UTC data (tz-naive index) to days, weeks or months in Norwegian time.
+
+    Days come first, so that a W-SUN week holds Monday to Sunday (resampling the hours
+    directly would put Sunday's hours in the next week).
+    """
+    columns = [c for c in df.columns if c in VARIABLE_INFO]
+    rules = {c: VARIABLE_INFO[c][2] for c in columns}
+    local = df[columns].copy()
+    local.index = pd.DatetimeIndex(local.index).tz_localize("UTC").tz_convert(LOCAL_TZ).tz_localize(None)
+    daily = local.resample("D").agg(rules)
+    if freq == "D":
+        return daily
+    # A period with no hours at all is NaN, not 0
+    counts = local.resample("D").size().resample(freq).sum()
+    result = daily.resample(freq).agg(rules)
+    return result.loc[counts > 0]
+
+
+def area_for_region(region: str) -> tuple[str, int]:
+    """Inverse of region_for_area: "NO3" -> ("EL", 3), "VASS2" -> ("VASS", 2), "NO" -> ("NO", 0)."""
+    if region == "NO":
+        return "NO", 0
+    if region.startswith("VASS"):
+        return "VASS", int(region[4:])
+    return "EL", int(region[2:])
 
 
 class WeatherClient:
@@ -59,6 +116,22 @@ class WeatherClient:
             raise ValueError(f"No locations for region '{region}'")
         return selected.reset_index(drop=True)
 
+    def _request(self, params: dict, attempts: int = 3) -> list:
+        """The API call, waiting out the per-minute limit of the free tier.
+
+        Other API errors become ConnectionError (an OSError), which theme.data_guard shows as a
+        warning; the client's own error class is a plain Exception.
+        """
+        for attempt in range(attempts):
+            try:
+                return self.client.weather_api(self.API_URL, params=params)
+            except OpenMeteoRequestsError as error:
+                if "minutely" in str(error).lower() and attempt < attempts - 1:
+                    time.sleep(61)
+                    continue
+                raise ConnectionError(f"open-meteo refused the request: {error}") from error
+        raise AssertionError("unreachable")
+
     def download(
         self,
         region: str,
@@ -90,7 +163,7 @@ class WeatherClient:
             "timezone": "GMT",
         }
         # One request for all locations, one response per location
-        responses = self.client.weather_api(self.API_URL, params=params)
+        responses = self._request(params)
 
         frames = []
         for location, response in enumerate(responses):
@@ -127,6 +200,20 @@ class WeatherClient:
         values = df.drop(columns=["region", "location", "lat", "lon"])
         return values.groupby("time").mean()
 
+    def download_years(self, region: str, first: int, last: int, n_locations: int = 1) -> pd.DataFrame:
+        """Hourly averages for whole years, one request per year.
+
+        The free API weighs a request by locations times days, and many years for several
+        locations in one request goes over the per-minute limit. The years are also the same
+        requests as WeatherData.year in the app, so the disk cache is shared.
+        """
+        frames = []
+        for year in range(first, last + 1):
+            end = min(pd.Timestamp(f"{year}-12-31"), WeatherData.last_available())
+            frames.append(self.average(self.download(region, f"{year}-01-01", end.strftime("%Y-%m-%d"),
+                                                     n_locations=n_locations)))
+        return pd.concat(frames).sort_index()
+
 
 class WeatherData:
     """Cached downloads for the app. 
@@ -144,6 +231,18 @@ class WeatherData:
 
     @st.cache_data(ttl="1d", show_spinner="Downloading ERA5 weather data from open-meteo...")
     def year(_self, region: str, year: int, n_locations: int = 1) -> pd.DataFrame:
-        """One calendar year, averaged over the locations."""
-        df = _self.client.download(region, f"{year}-01-01", f"{year}-12-31", n_locations=n_locations)
-        return WeatherClient.average(df)
+        """One calendar year, averaged over the locations.
+
+        The current year stops a week ago, since ERA5 is published with about five days' delay.
+        """
+        return _self.client.download_years(region, year, year, n_locations)
+
+    def years(self, region: str, first: int, last: int, n_locations: int = 1) -> pd.DataFrame:
+        """Several years, one cached request per year so overlapping ranges reuse downloads."""
+        frames = [self.year(region, y, n_locations) for y in range(first, last + 1)]
+        return pd.concat(frames).sort_index()
+
+    @staticmethod
+    def last_available() -> pd.Timestamp:
+        """Last day the year() downloads include."""
+        return pd.Timestamp.now().normalize() - pd.Timedelta(days=7)
