@@ -6,6 +6,9 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from modules import state
+from modules.forecast import DEFAULTS as FORECAST_DEFAULTS
+
 
 class ReservoirClient:
     """Client for the NVE Magasinstatistikk API."""
@@ -178,84 +181,91 @@ class ReservoirData:
 
 
 class ReservoirControls:
-    """Sidebar controls shared by the reservoir pages.
+    """Sidebar controls shared by the pages.
 
-    Rendered from app.py so choises persist across pages.
+    Rendered from app.py, with the values kept in modules/state.py so they persist across
+    pages, also pages that don't draw them (e.g. the map sets the area).
     """
-
-    ALL_COLUMNS = "All columns"
 
     def __init__(self, data: ReservoirData | None = None):
         self.data = data or ReservoirData()
 
-    def render(self, allow_all_columns: bool = False, single_area: bool = False) -> None:
-        """Draw the sidebar.
+    def render(self, area: bool = False, window: bool = False, column: bool = False) -> None:
+        """Draw the sidebar: always the area type, plus the chosen extra controls.
 
-        allow_all_columns adds `All columns` to the column dropdown on the plot page,
-        since the table's sparkline shows one column. single_area shows an area 
-        dropdown instead of the slider and column dropdown."""
+        area: dropdown with one area of the area type.
+        window: month range used as download interval, map time and forecast training data.
+        column: the Magasinstatistikk column to show.
+        """
         with st.sidebar:
-            st.header("Reservoir data")
+            st.header("Selection")
 
+            area_types = list(ReservoirClient.AREA_TYPES)
             st.radio(
                 "Area type",
-                options=list(ReservoirClient.AREA_TYPES),
+                options=area_types,
                 format_func=lambda t: f"{t} - {ReservoirClient.AREA_TYPES[t]}",
-                key="area_type",
+                **state.widget("area_type", area_types),
             )
 
-            if single_area:
-                # Reset the area if it doesn't exist for the new area type
+            if area:
                 area_type = self.area_type
                 numbers = self.data.area_numbers(area_type)
-                if st.session_state.get("area_number") not in numbers:
-                    st.session_state.pop("area_number", None)
+                # Falls back to the first area if the stored one isn't of this area type
                 st.selectbox(
                     "Area",
                     options=numbers,
                     format_func=lambda n: self.data.area_label(area_type, n),
-                    key="area_number",
+                    **state.widget("area_number", numbers),
                 )
-                return
 
-            # The slider decides which interval of data is downloaded and shown
-            months = self.data.months()
-            # Drop a stored value that is not a (start, end) pair, e.g. from an older session
-            stored = st.session_state.get("month_range")
-            if stored is not None and not (isinstance(stored, (tuple, list)) and len(stored) == 2):
-                del st.session_state["month_range"]
-            # Range slider, defaults to the last 12 months
-            st.select_slider(
-                "Download interval",
-                options=months,
-                value=(months[-12], months[-1]),
-                key="month_range",
-            )
+            if window:
+                months = self.data.months()
+                kwargs = state.widget("month_range", months, default=self.default_window(months))
+                st.select_slider(
+                    "Time window",
+                    options=months,
+                    help="Download interval for the tables and plots, the time shown on the map "
+                         "(the last month) and the training data for the forecast.",
+                    **kwargs,
+                )
 
-            # Dropdown for the column to show, with "All columns" first on the plot page
-            columns = list(ReservoirClient.VALUE_COLS)
-            if allow_all_columns:
-                columns = [self.ALL_COLUMNS] + columns
-            elif st.session_state.get("value_col") == self.ALL_COLUMNS:
-                del st.session_state["value_col"]
-            st.selectbox("Column", options=columns, key="value_col")
+            if column:
+                columns = list(ReservoirClient.VALUE_COLS)
+                st.selectbox("Column", options=columns, **state.widget("value_col", columns))
 
-    # Sidebar values, so sessiuon-_state keys live in one place
+    @staticmethod
+    def default_window(months: list[str]) -> tuple[str, str]:
+        """The history length of the default forecast setting, ending in the last month."""
+        n = int(FORECAST_DEFAULTS["history_years"] * 12)
+        return months[-min(n, len(months))], months[-1]
+
+    # Sidebar values, so the state keys live in one place
     @property
     def area_type(self) -> str:
-        return st.session_state["area_type"]
+        return state.get("area_type")
 
     @property
     def month_range(self) -> tuple[str, str]:
-        return st.session_state["month_range"]
+        stored = state.get("month_range")
+        if stored is None:
+            return self.default_window(self.data.months())
+        return tuple(stored)
 
     @property
     def value_col(self) -> str:
-        return st.session_state["value_col"]
+        return state.get("value_col", ReservoirClient.VALUE_COLS[0])
 
     @property
     def area_number(self) -> int:
-        return st.session_state["area_number"]
+        numbers = self.data.area_numbers(self.area_type)
+        stored = state.get("area_number")
+        return stored if stored in numbers else numbers[0]
+
+    def select_area(self, area_type: str, area_number: int) -> None:
+        """Store an area chosen outside the sidebar, e.g. by a click on the map."""
+        state.set("area_type", area_type)
+        state.set("area_number", area_number)
 
     @property
     def area_label(self) -> str:
