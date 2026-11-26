@@ -164,7 +164,8 @@ class FlowRepository:
 
     def __init__(self, uri: str):
         # The client keeps a connection pool
-        self.client = pymongo.MongoClient(uri)
+        # Fails after 10 s instead of 30 s when the database can't be reached
+        self.client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=10_000)
         self.collection = self.client[self.DB_NAME][self.COLLECTION]
 
     def ping(self) -> None:
@@ -215,7 +216,7 @@ def get_repository() -> FlowRepository:
 
 
 class FlowData:
-    """Streamlit-cached MongoDB querioes. `_self` keeps the instance out 
+    """Streamlit-cached MongoDB queries. `_self` keeps the instance out 
     of the cache hash.
     """
 
